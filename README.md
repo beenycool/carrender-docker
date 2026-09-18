@@ -13,8 +13,8 @@ no cloud SDKs, no credentials baked into the image).
   where it left off
 - **Preemption-safe**: frames are tarred and `PUT` to a `STATE_URL` every N frames
   and pulled back at startup
-- **No GPU required to build**; ~680 MB image, no CUDA toolkit (Blender ships its
-  own kernels and runtime — only the driver is injected at run time)
+- **No GPU required to build**; ~680 MB compressed to pull, no CUDA toolkit
+  (Blender ships its own kernels and runtime — only the driver is injected at run time)
 
 ---
 
@@ -141,17 +141,24 @@ render itself, so do not optimize the GPU choice too hard.
 every push to `main` and on version tags. No secrets to configure — it uses the
 built-in `GITHUB_TOKEN`.
 
-The published package is **private by default**. Salad then needs registry
-credentials, or make the package public:
+This repo's package is already **public**, so Salad can pull it with no registry
+credentials:
 
-```bash
-gh api -X PATCH /user/packages/container/carrender-docker \
-  -f visibility=public
+```
+ghcr.io/beenycool/carrender-docker:5.2.1
+ghcr.io/beenycool/carrender-docker@sha256:4c2113c107a85a77aff2a08f680b85c41ccdb59b39de40d93980a7eed1e9c500
 ```
 
-(Or GitHub → your profile → Packages → the package → Package settings → Change
-visibility.) The image contains no scene and no credentials, so a public package
-is normally fine.
+Check it anonymously (should print `architecture: amd64`, not a 401):
+
+```bash
+docker manifest inspect ghcr.io/beenycool/carrender-docker:5.2.1
+```
+
+GHCR packages are private by default, so if you fork this under another account you
+may need to make the package public (GitHub → profile → Packages → the package →
+Package settings → Change visibility), or give Salad registry credentials. The
+image contains no scene and no credentials, so public is normally fine.
 
 Building on an **arm64** machine requires `--platform linux/amd64` and QEMU; CI is
 easier, and it is what the workflow is for.

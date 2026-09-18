@@ -3,6 +3,10 @@ name: docker-image
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - ".dockerignore"
     tags: ["v*"]
   pull_request:
     branches: [main]
