@@ -52,6 +52,7 @@ UPLOAD_CMD="${UPLOAD_CMD:-}"
 # rclone remote (option A)
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"        # e.g. gdrive:carrender
 RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
+RCLONE_CONFIG="${RCLONE_CONFIG:-}"        # raw config text, if you cannot paste base64
 RCLONE_CONF="/tmp/rclone.conf"
 # Timeouts are not optional here.  rclone's default I/O timeout is 5 MINUTES, so a
 # stalled connection to Drive looks exactly like a hang; and Drive rate-limits
@@ -74,19 +75,68 @@ on_term() {
 }
 trap on_term TERM INT
 
+
+# Decoding a pasted secret is the fragile part: env-var fields wrap, quote, trim
+# padding or add a trailing newline.  Accept all of that rather than dying, so the
+# operator gets a real error instead of "invalid base64".
+write_config() {
+  local raw="$1" s
+  s="$(printf '%s' "$raw" | tr -d ' \t\r\n')"
+  s="${s%\"}"; s="${s#\"}"; s="${s%\'}"; s="${s#\'}"     # strip surrounding quotes
+  case "$s" in data:*) s="${s#data:}"; s="${s#*base64,}" ;; esac
+  if printf '%s' "$s" | grep -qE '^[A-Za-z0-9+/]+={0,2}$'; then
+    case $(( ${#s} % 4 )) in                                # restore stripped padding
+      2) s="${s}==" ;;
+      3) s="${s}=" ;;
+      1) die "RCLONE_CONFIG_B64 is not valid base64 (length ${#s}, first 8 '${s:0:8}', last 8 '${s: -8}')" ;;
+    esac
+    printf '%s' "$s" | base64 -d > "$RCLONE_CONF" 2>/dev/null \
+      || die "RCLONE_CONFIG_B64 decoded to nothing useful (length ${#s})"
+    # a real config is text with [sections]; garbage decodes to binary
+    grep -q '^\[' "$RCLONE_CONF" || {
+      if printf '%s' "$raw" | grep -q '^\['; then
+        warn "RCLONE_CONFIG_B64 did not decode to a config; using it raw"
+        printf '%s\n' "$raw" > "$RCLONE_CONF"
+      else
+        die "RCLONE_CONFIG_B64 decoded, but the result has no [section] - wrong value?"
+      fi
+    }
+  elif printf '%s' "$raw" | grep -q '^\['; then
+    warn "RCLONE_CONFIG_B64 looks like a raw config, not base64 - using it as-is"
+    printf '%s\n' "$raw" > "$RCLONE_CONF"
+  else
+    die "RCLONE_CONFIG_B64 is neither base64 nor a raw rclone config (length ${#raw})"
+  fi
+  log "rclone config: $(wc -l < "$RCLONE_CONF") lines, $(wc -c < "$RCLONE_CONF") bytes, sections: $(grep -c '^\[' "$RCLONE_CONF")"
+}
+
 # --------------------------------------------------------------- rclone
 setup_rclone() {
   [ -n "$RCLONE_REMOTE" ] || return 0
   command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE is set but rclone is not in the image"
   if [ -n "$RCLONE_CONFIG_B64" ]; then
-    printf '%s' "$RCLONE_CONFIG_B64" | base64 -d > "$RCLONE_CONF" \
-      || die "RCLONE_CONFIG_B64 is not valid base64"
+    write_config "$RCLONE_CONFIG_B64"
+    chmod 600 "$RCLONE_CONF"
+  elif [ -n "$RCLONE_CONFIG" ]; then
+    printf '%s\n' "$RCLONE_CONFIG" > "$RCLONE_CONF"
     chmod 600 "$RCLONE_CONF"
   elif [ ! -f "$RCLONE_CONF" ]; then
-    die "RCLONE_REMOTE is set but there is no RCLONE_CONFIG_B64 and no $RCLONE_CONF"
+    die "RCLONE_REMOTE is set but there is no RCLONE_CONFIG_B64/RCLONE_CONFIG and no $RCLONE_CONF"
   fi
-  log "rclone $(rclone version | head -1 | awk '{print $2}') remotes: $(rclone --config "$RCLONE_CONF" listremotes | tr -d '\n')"
-  log "remote target: $RCLONE_REMOTE"
+  grep -q '^\[' "$RCLONE_CONF" \
+    || die "$RCLONE_CONF has no [section] - the config did not survive the paste"
+  local rname="${RCLONE_REMOTE%%:*}"
+  local got
+  got="$(rclone --config "$RCLONE_CONF" listremotes 2>/dev/null | tr -d '\r')"
+  [ -n "$got" ] || die "$RCLONE_CONF lists no remotes - the pasted config is incomplete"
+  # catches a truncated paste that still begins with '[section]'
+  printf '%s\n' "$got" | grep -qx "${rname}:" \
+    || die "RCLONE_REMOTE is '$RCLONE_REMOTE' but the config only defines: $(printf '%s' "$got" | tr '\n' ' ')"
+  log "remotes: $(printf '%s' "$got" | tr '\n' ' ')  |  target: $RCLONE_REMOTE"
+  # actually exercise the backend: a truncated or wrong config passes listremotes
+  local probe
+  probe="$(rc lsd "$RCLONE_REMOTE" --max-depth 1 2>&1 | head -2 | tr '\n' ' ' || true)"
+  log "remote probe: ${probe:-<empty>}"
 }
 
 remote_in() {

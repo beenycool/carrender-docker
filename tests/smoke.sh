@@ -108,6 +108,38 @@ $DKR run --rm --network host -e STUB_FRAMES="$FRAMES" -e CHUNK="$CHUNK" \
 check "rclone: restored $FRAMES frames on restart" "grep -q 'remote: $FRAMES frames now on disk' /tmp/smoke_p5.log"
 check "rclone: rendered nothing new"               "grep -qE 'nothing to do|RENDER DONE: 0 frames' /tmp/smoke_p5.log"
 
+echo "== pass 6: rclone config paste handling =="
+# a config that has been wrapped, quoted and had its padding stripped - which is
+# exactly how a 696-char secret arrives from a terminal into an env-var field
+CFG_PLAIN='[t]
+type = local
+'
+M_OK="$(printf '%s' "$CFG_PLAIN" | base64 -w0)"
+M_WRAP="'$(printf '%s' "$CFG_PLAIN" | base64 | tr -d '\n' | fold -w 8 | tr '\n' ' ')'"
+mkdir -p "$RSTORE/b2/scene"
+printf 'not a real blend' > "$RSTORE/b2/scene/scene.blend"
+$DKR run --rm --network host -e STUB_FRAMES="$FRAMES" \
+  -e RCLONE_CONFIG_B64="$M_WRAP" -e RCLONE_REMOTE="t:$RSTORE/b2" \
+  -v "$RSTORE:$RSTORE" -e RES_PCT=10 -e SAMPLES=2 "$IMG" render > /tmp/smoke_p6.log 2>&1 || true
+check "mangled config (wrapped+quoted+padded) still works" \
+      "grep -q 'remotes: t:' /tmp/smoke_p6.log"
+check "mangled config run rendered"                       "grep -q 'RENDER DONE' /tmp/smoke_p6.log"
+
+rc7=0
+$DKR run --rm --network host -e RCLONE_CONFIG_B64='not a config at all' \
+  -e RCLONE_REMOTE="t:$RSTORE/b2" "$IMG" preflight > /tmp/smoke_p7.log 2>&1 || rc7=$?
+check "garbage config fails with a clear message" \
+      "grep -qE 'no \\[section\\]|neither base64' /tmp/smoke_p7.log"
+check "garbage config exits non-zero"             "[ $rc7 -ne 0 ]"
+
+# 13 chars of base64 can never decode (length % 4 == 1)
+rc8=0
+$DKR run --rm --network host \
+  -e RCLONE_CONFIG_B64="$(printf '%s' "$CFG_PLAIN" | base64 -w0 | cut -c1-13)" \
+  -e RCLONE_REMOTE="t:$RSTORE/b2" "$IMG" preflight > /tmp/smoke_p8.log 2>&1 || rc8=$?
+check "undecodable config is refused"             "grep -q 'not valid base64' /tmp/smoke_p8.log"
+check "undecodable config exits non-zero"         "[ $rc8 -ne 0 ]"
+
 echo "== pass 3: preflight only =="
 $DKR run --rm --network host -e STUB_FRAMES="$FRAMES" "$IMG" preflight 2>&1 | tee /tmp/smoke_p3.log >/dev/null
 check "preflight reports the device"                "grep -q 'device=OPTIX denoiser=OPTIX' /tmp/smoke_p3.log"
