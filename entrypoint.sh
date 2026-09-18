@@ -89,7 +89,7 @@ write_config() {
     case $(( ${#s} % 4 )) in                                # restore stripped padding
       2) s="${s}==" ;;
       3) s="${s}=" ;;
-      1) die "RCLONE_CONFIG_B64 is not valid base64 (length ${#s}, first 8 '${s:0:8}', last 8 '${s: -8}')" ;;
+      1) die "config is not valid base64: length ${#s}, starts '${s:0:12}', ends '${s: -12}'" ;;
     esac
     printf '%s' "$s" | base64 -d > "$RCLONE_CONF" 2>/dev/null \
       || die "RCLONE_CONFIG_B64 decoded to nothing useful (length ${#s})"
@@ -106,7 +106,7 @@ write_config() {
     warn "RCLONE_CONFIG_B64 looks like a raw config, not base64 - using it as-is"
     printf '%s\n' "$raw" > "$RCLONE_CONF"
   else
-    die "RCLONE_CONFIG_B64 is neither base64 nor a raw rclone config (length ${#raw})"
+    die "config is neither base64 nor a raw rclone config: length ${#raw}, starts '${raw:0:12}', ends '${raw: -12}'"
   fi
   log "rclone config: $(wc -l < "$RCLONE_CONF") lines, $(wc -c < "$RCLONE_CONF") bytes, sections: $(grep -c '^\[' "$RCLONE_CONF")"
 }
@@ -116,8 +116,15 @@ setup_rclone() {
   [ -n "$RCLONE_REMOTE" ] || return 0
   command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE is set but rclone is not in the image"
   if [ -n "$RCLONE_CONFIG_B64" ]; then
-    [ -n "$RCLONE_CONFIG_B64_2" ] && log "config: joining RCLONE_CONFIG_B64 + _2 ($((${#RCLONE_CONFIG_B64} + ${#RCLONE_CONFIG_B64_2})) chars)"
-    write_config "${RCLONE_CONFIG_B64}${RCLONE_CONFIG_B64_2}"
+    # a long secret gets truncated in a web env field, so allow up to 4 parts
+    cfg_all="$RCLONE_CONFIG_B64"
+    for n in 2 3 4; do
+      var="RCLONE_CONFIG_B64_$n"
+      v="${!var:-}"
+      [ -n "$v" ] && { cfg_all+="$v"; log "config: + \$$var (${#v} chars)"; }
+    done
+    log "config: total ${#cfg_all} chars"
+    write_config "$cfg_all"
     chmod 600 "$RCLONE_CONF"
   elif [ -n "$RCLONE_CONFIG" ]; then
     printf '%s\n' "$RCLONE_CONFIG" > "$RCLONE_CONF"

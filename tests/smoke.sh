@@ -141,10 +141,12 @@ check "undecodable config is refused"             "grep -q 'not valid base64' /t
 check "undecodable config exits non-zero"         "[ $rc8 -ne 0 ]"
 
 $DKR run --rm --network host -e STUB_FRAMES="$FRAMES" \
-  -e RCLONE_CONFIG_B64="${M_OK:0:20}" -e RCLONE_CONFIG_B64_2="${M_OK:20}" \
+  -e RCLONE_CONFIG_B64="${M_OK:0:10}" -e RCLONE_CONFIG_B64_2="${M_OK:10:10}" \
+  -e RCLONE_CONFIG_B64_3="${M_OK:20:10}" -e RCLONE_CONFIG_B64_4="${M_OK:30}" \
   -e RCLONE_REMOTE="t:$RSTORE/b2" -v "$RSTORE:$RSTORE" \
   -e RES_PCT=10 -e SAMPLES=2 "$IMG" render > /tmp/smoke_p9.log 2>&1 || true
-check "config split across two env vars works"    "grep -q 'config: joining' /tmp/smoke_p9.log"
+check "config split across four env vars works"  "grep -qE 'config: \+ \\$RCLONE_CONFIG_B64_4' /tmp/smoke_p9.log"
+check "split config reported the full length"     "grep -q 'config: total 40 chars' /tmp/smoke_p9.log"
 check "split config run rendered"                 "grep -q 'RENDER DONE' /tmp/smoke_p9.log"
 
 echo "== pass 3: preflight only =="
