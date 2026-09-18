@@ -52,6 +52,7 @@ UPLOAD_CMD="${UPLOAD_CMD:-}"
 # rclone remote (option A)
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"        # e.g. gdrive:carrender
 RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
+RCLONE_CONFIG_B64_2="${RCLONE_CONFIG_B64_2:-}"   # second half, if the field truncates
 RCLONE_CONFIG="${RCLONE_CONFIG:-}"        # raw config text, if you cannot paste base64
 RCLONE_CONF="/tmp/rclone.conf"
 # Timeouts are not optional here.  rclone's default I/O timeout is 5 MINUTES, so a
@@ -115,7 +116,8 @@ setup_rclone() {
   [ -n "$RCLONE_REMOTE" ] || return 0
   command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE is set but rclone is not in the image"
   if [ -n "$RCLONE_CONFIG_B64" ]; then
-    write_config "$RCLONE_CONFIG_B64"
+    [ -n "$RCLONE_CONFIG_B64_2" ] && log "config: joining RCLONE_CONFIG_B64 + _2 ($((${#RCLONE_CONFIG_B64} + ${#RCLONE_CONFIG_B64_2})) chars)"
+    write_config "${RCLONE_CONFIG_B64}${RCLONE_CONFIG_B64_2}"
     chmod 600 "$RCLONE_CONF"
   elif [ -n "$RCLONE_CONFIG" ]; then
     printf '%s\n' "$RCLONE_CONFIG" > "$RCLONE_CONF"

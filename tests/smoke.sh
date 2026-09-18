@@ -140,6 +140,13 @@ $DKR run --rm --network host \
 check "undecodable config is refused"             "grep -q 'not valid base64' /tmp/smoke_p8.log"
 check "undecodable config exits non-zero"         "[ $rc8 -ne 0 ]"
 
+$DKR run --rm --network host -e STUB_FRAMES="$FRAMES" \
+  -e RCLONE_CONFIG_B64="${M_OK:0:20}" -e RCLONE_CONFIG_B64_2="${M_OK:20}" \
+  -e RCLONE_REMOTE="t:$RSTORE/b2" -v "$RSTORE:$RSTORE" \
+  -e RES_PCT=10 -e SAMPLES=2 "$IMG" render > /tmp/smoke_p9.log 2>&1 || true
+check "config split across two env vars works"    "grep -q 'config: joining' /tmp/smoke_p9.log"
+check "split config run rendered"                 "grep -q 'RENDER DONE' /tmp/smoke_p9.log"
+
 echo "== pass 3: preflight only =="
 $DKR run --rm --network host -e STUB_FRAMES="$FRAMES" "$IMG" preflight 2>&1 | tee /tmp/smoke_p3.log >/dev/null
 check "preflight reports the device"                "grep -q 'device=OPTIX denoiser=OPTIX' /tmp/smoke_p3.log"
