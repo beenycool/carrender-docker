@@ -21,8 +21,18 @@ ok()   { printf '  \033[1;32mPASS\033[0m %s\n' "$*"; pass=$((pass+1)); }
 bad()  { printf '  \033[1;31mFAIL\033[0m %s\n' "$*"; fail=$((fail+1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true; rm -rf "$STORE" "$RSTORE"; }
-trap cleanup EXIT
+# The containers write as root, so the temp dirs can end up root-owned and
+# undeletable by the CI runner.  Never let cleanup change the script's exit code.
+cleanup() {
+  [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
+  local d
+  for d in "$STORE" "$RSTORE"; do
+    [ -n "$d" ] || continue
+    rm -rf "$d" 2>/dev/null || sudo rm -rf "$d" 2>/dev/null || true
+  done
+  return 0
+}
+trap 'cleanup || true' EXIT
 
 cat > "$STORE/server.py" <<'PY'
 import http.server, os, sys
