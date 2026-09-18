@@ -1,0 +1,36 @@
+# docker compose -f docker/docker-compose.yml up --build
+#
+# Mounts the repo as /data so find_scene() picks up wet_scene_anim_v5.blend and
+# frames land in ./frames, encode in ./out.
+services:
+  render:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BLENDER_VERSION: "5.2.1"
+    image: carrender:5.2.1
+    # driver: nvidia + the NVIDIA Container Toolkit on the host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      RES_PCT: "50"          # 50 -> 1080x1920 of the 2160x3840 scene
+      SAMPLES: "32"
+      BOUNCES: "6"
+      TEXLIMIT: "2048"       # OFF for a 4K master on >=16 GB VRAM
+      DENOISER: "auto"       # auto -> OPTIX, or OIDN if the host lacks the weights
+      PERSIST: "1"
+      STEP: "1"
+      FPS: "24"
+      CRF: "16"
+      ENCODE: "1"
+    volumes:
+      - .:/data
+    shm_size: "2gb"
+    # a crashed run is resumable: frames already on disk are skipped
+    restart: "no"

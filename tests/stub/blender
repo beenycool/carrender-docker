@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Test stub standing in for the real Blender binary.  It reproduces only the
+# observable contract the entrypoint depends on:
+#   * `-P preflight.py`        -> prints PREFLIGHT_DEVICE=/PREFLIGHT_DENOISER=
+#   * `-P render.py`           -> writes missing frames up to $LIMIT, then prints
+#                                 "CHUNK DONE" or "RENDER DONE"
+#   * `--python-expr`          -> prints CAR_F0
+# Used only by docker/Dockerfile.smoke; never in the shipped image.
+set -euo pipefail
+args="$*"
+: "${STUB_FRAMES:=5}"
+: "${OUTDIR:=/data/frames}"
+: "${LIMIT:=0}"
+
+png() {  # a real (tiny) PNG so the ffmpeg encode step is exercised
+  ffmpeg -hide_banner -loglevel error -y -f lavfi \
+         -i "color=c=0x$(printf '%02x' $((RANDOM % 200 + 20)))0808:s=64x64" \
+         -frames:v 1 "$1"
+}
+
+case "$args" in
+  *preflight.py*)
+    echo "gpu        : STUB GPU, 24564 MiB"
+    echo "device     : OPTIX  ['NVIDIA GeForce RTX 4090']"
+    echo "probe render: ok"
+    echo "PREFLIGHT_DEVICE=OPTIX"
+    echo "PREFLIGHT_DENOISER=OPTIX"
+    exit 0
+    ;;
+  *render.py*)
+    mkdir -p "$OUTDIR"
+    made=0
+    for f in $(seq 1 "$STUB_FRAMES"); do
+      p="$OUTDIR/f$(printf '%04d' "$f").png"
+      [ -f "$p" ] && continue
+      if [ "$LIMIT" != "0" ] && [ "$made" -ge "$LIMIT" ]; then break; fi
+      png "$p"
+      made=$((made + 1))
+      echo "frame $f  $made  ..."
+    done
+    left=0
+    for f in $(seq 1 "$STUB_FRAMES"); do
+      [ -f "$OUTDIR/f$(printf '%04d' "$f").png" ] || left=$((left + 1))
+    done
+    if [ "$left" -gt 0 ]; then
+      echo "CHUNK DONE: $made frames in 0.1 min, $left still missing"
+    else
+      echo "RENDER DONE: $made frames"
+    fi
+    exit 0
+    ;;
+  *--python-expr*) echo "CAR_F0 1"; exit 0 ;;
+  *) echo "stub blender: unhandled: $args" >&2; exit 1 ;;
+esac

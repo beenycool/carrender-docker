@@ -1,0 +1,8 @@
+*.blend
+*.blend[0-9]
+frames/
+out/
+*.mp4
+*.png
+__pycache__/
+*.pyc

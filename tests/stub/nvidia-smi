@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Test stub for nvidia-smi (docker/Dockerfile.smoke only).
+set -euo pipefail
+case "$*" in
+  *"--query-gpu=name,driver_version,memory.total"*) echo "STUB GPU, 999.99, 24564 MiB" ;;
+  *"--query-gpu=name,memory.total"*)                echo "STUB GPU, 24564 MiB" ;;
+  *) echo "STUB GPU" ;;
+esac

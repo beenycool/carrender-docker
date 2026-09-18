@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+#
+# Smoke-test image: the real entrypoint, the real render.py/preflight.py, but a
+# STUB Blender that only writes frames.  It exists to exercise the Salad-specific
+# control flow - chunked rendering, the state tar push/pull, resume after a
+# preemption, the ffmpeg encode and the pre-signed PUT upload - on a machine with
+# no GPU and no x86-64 Blender build.
+#
+#   docker build -f docker/Dockerfile.smoke -t carrender:smoke .
+#   docker/tests/smoke.sh
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bash coreutils tar gzip curl ca-certificates ffmpeg python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY preflight.py render.py entrypoint.sh /opt/carrender/
+COPY tests/stub/blender /usr/local/bin/blender
+COPY tests/stub/nvidia-smi /usr/local/bin/nvidia-smi
+RUN chmod +x /usr/local/bin/blender /usr/local/bin/nvidia-smi \
+             /opt/carrender/entrypoint.sh \
+    # a dummy "baked-in" scene so find_scene() has something to satisfy it
+ && printf 'not a real blend' > /opt/carrender/scene.blend
+
+WORKDIR /data
+ENTRYPOINT ["/opt/carrender/entrypoint.sh"]
+CMD ["render"]
