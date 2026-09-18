@@ -126,6 +126,21 @@ COPY your_scene.blend /opt/carrender/scene.blend
 | `RETRIES` | `3` | Retries for a failed render pass |
 | `UPLOAD_CMD` | – | Arbitrary post-render hook (runs after the built-in upload) |
 
+### rclone gotchas (learned the hard way)
+
+* **Set timeouts.** rclone's default I/O timeout is **5 minutes**, so a stalled
+  connection to Drive is indistinguishable from a hang — you get a 10-minute
+  silence rather than an error. The image sets `--timeout 60s --contimeout 15s`
+  for you.
+* **Big chunks.** Google Drive rate-limits small chunks aggressively. With the
+  default 8 MiB chunks a 146 MB scene is ~19 API calls and Drive starts rejecting
+  the finalize step; rclone then silently **restarts the whole upload from zero**
+  (watch for the total suddenly doubling). `--drive-chunk-size 32M` is what works.
+* **Overwriting an existing Drive file is the fragile case.** Uploading to a new
+  name has been reliable every time; replacing an existing file is what failed
+  repeatedly. If an upload to `<remote>` misbehaves, upload under a new name and
+  rename server-side with `rclone moveto` — that is a metadata call, no upload.
+
 ---
 
 ## Which GPU

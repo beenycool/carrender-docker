@@ -53,7 +53,13 @@ UPLOAD_CMD="${UPLOAD_CMD:-}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"        # e.g. gdrive:carrender
 RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
 RCLONE_CONF="/tmp/rclone.conf"
-RCLONE_FLAGS=(--config "$RCLONE_CONF" --stats-one-line --stats 20s --transfers 8)
+# Timeouts are not optional here.  rclone's default I/O timeout is 5 MINUTES, so a
+# stalled connection to Drive looks exactly like a hang; and Drive rate-limits
+# small chunks hard, which makes rclone restart a 146 MB upload from zero.  Big
+# chunks + fast timeouts turn both failure modes into a quick retry.
+RCLONE_FLAGS=(--config "$RCLONE_CONF" --stats-one-line --stats 20s --transfers 4 \
+              --timeout 60s --contimeout 15s --low-level-retries 10 --retries 3 \
+              --drive-chunk-size 32M --tpslimit 8)
 
 log()  { printf '\033[1;36m[carrender]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[carrender]\033[0m %s\n' "$*" >&2; }
