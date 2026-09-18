@@ -151,6 +151,8 @@ setup_rclone() {
 remote_in() {
   [ -n "$RCLONE_REMOTE" ] || return 0
   mkdir -p "$SCENE_DIR" "$FRAMES_DIR"
+  # create them if this is the first run, so a missing folder is not an "ERROR"
+  rc mkdir "$RCLONE_REMOTE/frames" "$RCLONE_REMOTE/out" >/dev/null 2>&1 || true
   log "remote: pulling scene from $RCLONE_REMOTE/scene"
   rc copy "$RCLONE_REMOTE/scene" "$SCENE_DIR" 2>&1 | tail -2 || warn "scene pull failed"
   log "remote: pulling any finished frames from $RCLONE_REMOTE/frames"
@@ -244,6 +246,15 @@ preflight() {
   local pf_device pf_den
   pf_device="$(echo "$out" | sed -n 's/^PREFLIGHT_DEVICE=//p' | tail -1)"
   pf_den="$(echo "$out" | sed -n 's/^PREFLIGHT_DENOISER=//p' | tail -1)"
+
+  # A crashed probe used to look identical to "this host has no GPU", which
+  # silently pushed a 32 spp render onto the CPU with no denoiser.  Keep the
+  # requested device and let render.py's own fallback chain decide instead.
+  if echo "$out" | grep -q '^PREFLIGHT_FAILED=1'; then
+    warn "preflight probe FAILED (not the same as no GPU) - using the requested" \
+    warn "device/denoiser ($DEVICE/$DENOISER) and letting render.py fall back"
+    pf_device="$DEVICE"; pf_den="$DENOISER"
+  fi
   pf_device="${pf_device:-CPU}"; pf_den="${pf_den:-NONE}"
 
   # The Colab failure mode: the enum accepts OPTIX but the render then dies with
@@ -252,6 +263,11 @@ preflight() {
     warn "OptiX denoiser weights missing on this host -> OIDN (CPU)"
     warn "OIDN needs vCPUs: 39 of 48 s/frame on a 2-vCPU box in the project notes"
     pf_den="OIDN"
+  fi
+  if echo "$out" | grep -qi 'OptiX initialization failed'; then
+    warn "OPTIX INIT FAILED on this host: $(echo "$out" | grep -i 'OptiX initialization failed' | head -1)"
+    warn "OptiX needs the driver's libnvoptix.so.1; the 'driver libs' line above says what was found."
+    warn "Without it cycles can only denoise with OIDN (CPU), which needs vCPUs."
   fi
   log "device=$pf_device denoiser=$pf_den"
   printf '%s' "$pf_device" > /tmp/pf_device

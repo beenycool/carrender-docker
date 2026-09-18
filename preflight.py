@@ -17,7 +17,7 @@ import sys
 
 import bpy
 
-PCT = float(os.environ.get('PREFLIGHT_PCT', '4'))
+PCT = int(float(os.environ.get('PREFLIGHT_PCT', '4')))   # must be an int
 SAMPLES = int(os.environ.get('PREFLIGHT_SAMPLES', '2'))
 
 sc = bpy.context.scene
@@ -43,6 +43,19 @@ def pick_device():
     return 'CPU', ['(cpu)']
 
 
+def optix_libs():
+    """OptiX comes from the DRIVER, injected by the container runtime - it is not
+    part of the image.  If libnvoptix is missing, cycles cannot use it at all."""
+    import glob
+    found = []
+    for pat in ('/usr/lib/x86_64-linux-gnu/libnvoptix*',
+                '/usr/lib64/libnvoptix*',
+                '/usr/share/nvidia/nvoptix.bin',
+                '/usr/lib/x86_64-linux-gnu/libcuda*'):
+        found += glob.glob(pat)
+    return sorted(set(found))
+
+
 def vram():
     try:
         q = subprocess.run(['nvidia-smi',
@@ -57,6 +70,9 @@ def vram():
 def main():
     device, names = pick_device()
     print('gpu        : %s' % vram())
+    libs = optix_libs()
+    print('driver libs: %s' % (', '.join(libs) if libs else
+                               'NONE FOUND - /dev/nvidia* may not be exposed'))
     print('device     : %s  %s' % (device, names))
     cy.device = 'CPU' if device == 'CPU' else 'GPU'
     if device == 'CPU':
@@ -106,6 +122,7 @@ if __name__ in ('__main__', 'builtins'):
         import traceback
         print('PREFLIGHT EXCEPTION')
         print(traceback.format_exc())
-        print('PREFLIGHT_DEVICE=CPU')
-        print('PREFLIGHT_DENOISER=NONE')
+        # Distinct marker: the entrypoint must NOT read this as "CPU only", it
+        # means the PROBE failed.  Let the render script pick its own device.
+        print('PREFLIGHT_FAILED=1')
         sys.exit(0)
