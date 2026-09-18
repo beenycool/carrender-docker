@@ -32,8 +32,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Blender links these even in `-b` mode; ffmpeg does the H.264 encode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl xz-utils ffmpeg tar gzip coreutils \
-        rclone \
+        ca-certificates curl xz-utils unzip ffmpeg tar gzip coreutils \
         libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxrandr2 \
         libxinerama1 libxcursor1 libxkbcommon0 libxext6 \
         libgl1 libglu1-mesa libegl1 libsm6 libice6 \
@@ -50,6 +49,16 @@ RUN curl -fsSL -o /tmp/blender.tar.xz \
     && rm /tmp/blender.tar.xz \
     && ln -sf /opt/blender/blender /usr/local/bin/blender \
     && blender -b --version | head -3
+
+ARG RCLONE_VERSION=v1.75.1
+ARG RCLONE_SHA256="982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
+RUN curl -fsSL -o /tmp/rclone.zip \
+        "https://downloads.rclone.org/${RCLONE_VERSION}/rclone-${RCLONE_VERSION}-linux-amd64.zip" \
+    && echo "${RCLONE_SHA256}  /tmp/rclone.zip" | sha256sum -c - \
+    && unzip -q /tmp/rclone.zip -d /tmp/rclone \
+    && install -m 0755 /tmp/rclone/rclone-${RCLONE_VERSION}-linux-amd64/rclone /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone /tmp/rclone.zip \
+    && rclone version | head -1
 
 COPY preflight.py render.py entrypoint.sh /opt/carrender/
 RUN chmod +x /opt/carrender/entrypoint.sh

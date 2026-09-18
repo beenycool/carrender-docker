@@ -13,7 +13,7 @@ no cloud SDKs, no credentials baked into the image).
   where it left off
 - **Preemption-safe**: frames are tarred and `PUT` to a `STATE_URL` every N frames
   and pulled back at startup
-- **No GPU required to build**; ~680 MB compressed to pull, no CUDA toolkit
+- **No GPU required to build**; ~690 MB compressed to pull, no CUDA toolkit
   (Blender ships its own kernels and runtime — only the driver is injected at run time)
 
 ---
