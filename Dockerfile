@@ -28,7 +28,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     BLENDER_USER_CONFIG=/tmp/blender-config \
     BLENDER_USER_SCRIPTS=/tmp/blender-scripts \
     NVIDIA_VISIBLE_DEVICES=all \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    NVIDIA_DRIVER_CAPABILITIES=all
+# ^ `all`, not `compute,utility`.  OptiX - and therefore the GPU denoiser - needs
+#   libnvoptix.so.1, which is a DRIVER library the container runtime has to inject;
+#   it is not in the image and CUDA alone does not bring it.  With compute,utility
+#   the runtime omits it, cycles logs "OptiX initialization failed with error code
+#   7804", drops OptiX from the denoiser enum and falls back to the CPU denoiser:
+#   measured 24.4 s/frame on an RTX 3060 versus ~10 s with OptiX working.
+#   I could not confirm from the toolkit sources which single capability owns
+#   libnvoptix, and `all` costs nothing, so `all` it is.
 
 # Blender links these even in `-b` mode; ffmpeg does the H.264 encode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
