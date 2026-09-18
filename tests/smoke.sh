@@ -9,7 +9,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${PORT:-8099}"
 STORE="$(mktemp -d)"
+RSTORE="$(mktemp -d)"          # fake "cloud" for the rclone path
 IMG=carrender:smoke
+RCFG_B64="$(printf '[t]\ntype = local\n' | base64 -w0)"   # rclone: local backend
 DKR="${DKR:-docker}"
 FRAMES=5
 CHUNK=2
@@ -19,7 +21,7 @@ ok()   { printf '  \033[1;32mPASS\033[0m %s\n' "$*"; pass=$((pass+1)); }
 bad()  { printf '  \033[1;31mFAIL\033[0m %s\n' "$*"; fail=$((fail+1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true; rm -rf "$STORE"; }
+cleanup() { [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true; rm -rf "$STORE" "$RSTORE"; }
 trap cleanup EXIT
 
 cat > "$STORE/server.py" <<'PY'
@@ -76,6 +78,25 @@ run p2
 check "pass2 restored the frames"                   "grep -q 'state: restored $FRAMES frames' /tmp/smoke_p2.log"
 check "pass2 rendered nothing new"                  "grep -qE 'nothing to do|RENDER DONE: 0 frames' /tmp/smoke_p2.log"
 check "pass2 re-encoded from restored frames"       "grep -q 'wrote .*carrender.mp4' /tmp/smoke_p2.log"
+
+echo "== pass 4: rclone remote (scene in, frames + video out) =="
+mkdir -p "$RSTORE/bucket/scene"
+printf 'not a real blend' > "$RSTORE/bucket/scene/scene.blend"
+$DKR run --rm --network host -e STUB_FRAMES="$FRAMES" -e CHUNK="$CHUNK" \
+  -e RCLONE_CONFIG_B64="$RCFG_B64" -e RCLONE_REMOTE="t:$RSTORE/bucket" \
+  -v "$RSTORE:$RSTORE" -e RES_PCT=10 -e SAMPLES=2 "$IMG" render 2>&1 | tee /tmp/smoke_p4.log
+check "rclone: pulled the scene from the remote"   "grep -q 'remote: pulling scene' /tmp/smoke_p4.log"
+check "rclone: synced frames back up"              "grep -q 'remote: syncing' /tmp/smoke_p4.log"
+check "rclone: pushed the mp4"                     "grep -q 'remote: pushing' /tmp/smoke_p4.log"
+check "rclone: frames landed in the remote"        "[ \"\$(find '$RSTORE/bucket/frames' -name 'f*.png' | wc -l)\" -eq $FRAMES ]"
+check "rclone: mp4 landed in the remote"           "[ -s '$RSTORE/bucket/out/carrender.mp4' ]"
+
+echo "== pass 5: fresh container resumes from the rclone remote =="
+$DKR run --rm --network host -e STUB_FRAMES="$FRAMES" -e CHUNK="$CHUNK" \
+  -e RCLONE_CONFIG_B64="$RCFG_B64" -e RCLONE_REMOTE="t:$RSTORE/bucket" \
+  -v "$RSTORE:$RSTORE" -e RES_PCT=10 -e SAMPLES=2 "$IMG" render 2>&1 | tee /tmp/smoke_p5.log
+check "rclone: restored $FRAMES frames on restart" "grep -q 'remote: $FRAMES frames now on disk' /tmp/smoke_p5.log"
+check "rclone: rendered nothing new"               "grep -qE 'nothing to do|RENDER DONE: 0 frames' /tmp/smoke_p5.log"
 
 echo "== pass 3: preflight only =="
 $DKR run --rm --network host -e STUB_FRAMES="$FRAMES" "$IMG" preflight 2>&1 | tee /tmp/smoke_p3.log >/dev/null

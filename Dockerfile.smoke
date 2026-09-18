@@ -12,6 +12,7 @@ FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash coreutils tar gzip curl ca-certificates ffmpeg python3 \
+        rclone \
     && rm -rf /var/lib/apt/lists/*
 
 COPY preflight.py render.py entrypoint.sh /opt/carrender/

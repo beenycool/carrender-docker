@@ -3,11 +3,19 @@
 #
 #   docker run --rm --gpus all carrender:5.2.1 render
 #
-# Salad has no persistent volume, so this container is designed around that:
-#   * the scene is DOWNLOADED at start (SCENE_URL) or baked into the image
-#   * finished frames are tarred and PUSHED OUT every SYNC_EVERY frames, and the
-#     tar is pulled back at start, so a preempted run resumes instead of restarting
-#   * the final mp4 is uploaded with a pre-signed PUT (UPLOAD_URL), no cloud SDKs
+# Salad has no persistent volume, so the container is designed around that.  Two
+# interchangeable ways to get data in and out - use whichever you already have:
+#
+#   A) rclone remote   (e.g. Google Drive / S3 / B2 / R2)
+#        RCLONE_CONFIG_B64 + RCLONE_REMOTE
+#        scene  <- <remote>/scene/scene.blend
+#        frames <-> <remote>/frames          (incremental, per file)
+#        video  -> <remote>/out/carrender.mp4
+#
+#   B) pre-signed URLs (any HTTP storage, no SDK, no credentials in the image)
+#        SCENE_URL (GET), STATE_URL (PUT frames.tar), UPLOAD_URL (PUT mp4)
+#
+# A is usually less work; B puts no long-lived credential in the container.
 #
 # Commands: render (default) | preflight | encode | bench | shell
 set -euo pipefail
@@ -19,7 +27,7 @@ SCENE_DIR="${SCENE_DIR:-/data/scene}"
 FRAMES_DIR="${FRAMES_DIR:-/data/frames}"
 OUT="${OUT:-/data/out}"
 
-RES_PCT="${RES_PCT:-50}"        # 50 -> 1080x1920 for this 2160x3840 scene
+RES_PCT="${RES_PCT:-50}"        # 50 -> 1080x1920 for a 2160x3840 scene
 SAMPLES="${SAMPLES:-32}"
 BOUNCES="${BOUNCES:-6}"
 TEXLIMIT="${TEXLIMIT:-2048}"
@@ -35,57 +43,106 @@ RETRIES="${RETRIES:-3}"
 FRAMES="${FRAMES:-}"
 
 # resumability across preemption / restarts
-CHUNK="${CHUNK:-32}"            # frames per render pass before a state upload
-SYNC_EVERY="${SYNC_EVERY:-$CHUNK}"
+CHUNK="${CHUNK:-32}"            # frames per render pass before a state sync
 STATE_URL="${STATE_URL:-}"      # pre-signed PUT for frames.tar
-STATE_URL_GET="${STATE_URL_GET:-${STATE_URL}}"   # pre-signed GET (defaults to same)
-UPLOAD_URL="${UPLOAD_URL:-}"    # pre-signed PUT for the encoded mp4
-UPLOAD_CMD="${UPLOAD_CMD:-}"    # arbitrary post-render hook (rclone/aws/cp/...)
+STATE_URL_GET="${STATE_URL_GET:-${STATE_URL}}"
+UPLOAD_URL="${UPLOAD_URL:-}"
+UPLOAD_CMD="${UPLOAD_CMD:-}"
+
+# rclone remote (option A)
+RCLONE_REMOTE="${RCLONE_REMOTE:-}"        # e.g. gdrive:carrender
+RCLONE_CONFIG_B64="${RCLONE_CONFIG_B64:-}"
+RCLONE_CONF="/tmp/rclone.conf"
+RCLONE_FLAGS=(--config "$RCLONE_CONF" --stats-one-line --stats 20s --transfers 8)
 
 log()  { printf '\033[1;36m[carrender]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[carrender]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[carrender]\033[0m %s\n' "$*" >&2; exit 1; }
 sha()  { sha256sum "$1" | cut -d' ' -f1; }
+rc()   { rclone "${RCLONE_FLAGS[@]}" "$@"; }
 
 on_term() {
-  warn "signal caught - uploading what exists, then exiting"
+  warn "signal caught - syncing what exists, then exiting"
   sync_out || true
   exit 143
 }
 trap on_term TERM INT
 
+# --------------------------------------------------------------- rclone
+setup_rclone() {
+  [ -n "$RCLONE_REMOTE" ] || return 0
+  command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE is set but rclone is not in the image"
+  if [ -n "$RCLONE_CONFIG_B64" ]; then
+    printf '%s' "$RCLONE_CONFIG_B64" | base64 -d > "$RCLONE_CONF" \
+      || die "RCLONE_CONFIG_B64 is not valid base64"
+    chmod 600 "$RCLONE_CONF"
+  elif [ ! -f "$RCLONE_CONF" ]; then
+    die "RCLONE_REMOTE is set but there is no RCLONE_CONFIG_B64 and no $RCLONE_CONF"
+  fi
+  log "rclone $(rclone version | head -1 | awk '{print $2}') remotes: $(rclone --config "$RCLONE_CONF" listremotes | tr -d '\n')"
+  log "remote target: $RCLONE_REMOTE"
+}
+
+remote_in() {
+  [ -n "$RCLONE_REMOTE" ] || return 0
+  mkdir -p "$SCENE_DIR" "$FRAMES_DIR"
+  log "remote: pulling scene from $RCLONE_REMOTE/scene"
+  rc copy "$RCLONE_REMOTE/scene" "$SCENE_DIR" 2>&1 | tail -2 || warn "scene pull failed"
+  log "remote: pulling any finished frames from $RCLONE_REMOTE/frames"
+  rc copy "$RCLONE_REMOTE/frames" "$FRAMES_DIR" 2>&1 | tail -2 || true
+  local n; n="$(find "$FRAMES_DIR" -name 'f*.png' 2>/dev/null | wc -l)"
+  log "remote: $n frames now on disk"
+}
+
+remote_sync() {
+  [ -n "$RCLONE_REMOTE" ] || return 0
+  local n
+  n="$(find "$FRAMES_DIR" -name 'f*.png' 2>/dev/null | wc -l)"
+  [ "$n" -gt 0 ] || return 0
+  log "remote: syncing $n frames -> $RCLONE_REMOTE/frames"
+  rc copy "$FRAMES_DIR" "$RCLONE_REMOTE/frames" 2>&1 | tail -2 || warn "frame sync failed"
+}
+
+remote_out() {
+  [ -n "$RCLONE_REMOTE" ] || return 0
+  [ -d "$OUT" ] || return 0
+  log "remote: pushing $OUT -> $RCLONE_REMOTE/out"
+  rc copy "$OUT" "$RCLONE_REMOTE/out" 2>&1 | tail -2 || warn "output push failed"
+}
+
 # --------------------------------------------------------------- scene
 fetch_scene() {
   mkdir -p "$SCENE_DIR" "$FRAMES_DIR" "$OUT"
-  if [ -n "$SCENE_URL" ]; then
-    if [ -n "$SCENE" ] && [ -f "$SCENE" ]; then
-      log "scene already present: $SCENE"
-    else
-      log "downloading scene: ${SCENE_URL%%\?*}"
-      curl -fSL --retry 3 --retry-delay 2 -o "$SCENE_DIR/scene.blend" "$SCENE_URL" \
-        || die "scene download failed"
-      SCENE="$SCENE_DIR/scene.blend"
-      if [ -n "$SCENE_SHA256" ]; then
-        log "scene sha256 $(sha "$SCENE") (expect $SCENE_SHA256)"
-        [ "$(sha "$SCENE")" = "$SCENE_SHA256" ] || die "scene sha256 mismatch"
-      fi
+
+  if [ -z "$SCENE" ] || [ ! -f "$SCENE" ]; then
+    for cand in "$SCENE_DIR/scene.blend" /opt/carrender/scene.blend; do
+      [ -f "$cand" ] && { SCENE="$cand"; break; }
+    done
+  fi
+
+  if [ -n "$SCENE_URL" ] && { [ -z "$SCENE" ] || [ ! -f "$SCENE" ]; }; then
+    log "downloading scene: ${SCENE_URL%%\?*}"
+    curl -fSL --retry 3 --retry-delay 2 -o "$SCENE_DIR/scene.blend" "$SCENE_URL" \
+      || die "scene download failed"
+    SCENE="$SCENE_DIR/scene.blend"
+    if [ -n "$SCENE_SHA256" ]; then
+      log "scene sha256 $(sha "$SCENE") (expect $SCENE_SHA256)"
+      [ "$(sha "$SCENE")" = "$SCENE_SHA256" ] || die "scene sha256 mismatch"
     fi
   fi
+
   if [ -z "$SCENE" ] || [ ! -f "$SCENE" ]; then
-    if [ -f /opt/carrender/scene.blend ]; then
-      SCENE=/opt/carrender/scene.blend
-    else
-      SCENE="$(find /data /opt/carrender -maxdepth 3 -name '*.blend' \
-                -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
-    fi
+    SCENE="$(find /data /opt/carrender -maxdepth 3 -name '*.blend' \
+              -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
   fi
   [ -n "$SCENE" ] && [ -f "$SCENE" ] \
-    || die "no scene: set SCENE_URL= (pre-signed GET) or bake one in, or mount one at /data"
+    || die "no scene: set RCLONE_REMOTE + RCLONE_CONFIG_B64, or SCENE_URL, or mount one at /data"
   log "scene: $SCENE ($(du -h "$SCENE" | cut -f1))"
 }
 
-# --------------------------------------------------- incremental state (tar)
+# --------------------------------------------------- incremental state
 sync_out() {
+  remote_sync
   [ -n "$STATE_URL" ] || return 0
   local n
   n="$(find "$FRAMES_DIR" -name 'f*.png' 2>/dev/null | wc -l)"
@@ -153,10 +210,8 @@ do_render() {
   log "render ${RES_PCT}% / ${SAMPLES} spp / ${BOUNCES} bounces / ${dev} + ${den} denoise"
   mkdir -p "$FRAMES_DIR"
 
-  # an explicit frame list is a one-shot pass; otherwise render in chunks so the
-  # state tar is pushed periodically and a preemption does not lose the run
   local chunk="$CHUNK"
-  if [ -n "$FRAMES" ]; then chunk=0; fi
+  [ -n "$FRAMES" ] && chunk=0     # explicit frame list: one pass
 
   while :; do
     attempt=$((attempt + 1))
@@ -207,6 +262,7 @@ do_encode() {
 }
 
 upload() {
+  remote_out
   [ -n "$UPLOAD_URL" ] || return 0
   local f="$OUT/carrender.mp4"
   [ -f "$f" ] || { warn "UPLOAD_URL set but $f does not exist"; return 0; }
@@ -219,8 +275,10 @@ upload() {
 # ------------------------------------------------------------------ main
 cmd="${1:-render}"
 case "$cmd" in
-  preflight) fetch_scene; preflight ;;
+  preflight) setup_rclone; remote_in; fetch_scene; preflight ;;
   render)
+    setup_rclone
+    remote_in
     fetch_scene
     restore_out
     preflight
@@ -231,8 +289,7 @@ case "$cmd" in
     log "ALL DONE"
     ;;
   bench)
-    fetch_scene
-    preflight
+    setup_rclone; remote_in; fetch_scene; preflight
     F0="$(blender -b "$SCENE" --python-expr \
           'import bpy;print("CAR_F0",bpy.context.scene.frame_start)' 2>/dev/null \
           | sed -n 's/^CAR_F0 //p' | tail -1)"
@@ -242,7 +299,7 @@ case "$cmd" in
     log "bench frames: $FRAMES (first frame includes the BVH build)"
     do_render
     ;;
-  encode) fetch_scene; do_encode; upload ;;
+  encode) setup_rclone; remote_in; fetch_scene; do_encode; upload ;;
   shell) exec /bin/bash ;;
   *) die "unknown command '$cmd' (render|preflight|encode|bench|shell)" ;;
 esac

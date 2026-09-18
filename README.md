@@ -60,22 +60,46 @@ it is 39 s/frame versus ~1.5 s for the whole frame with OptiX.
    `SCENE_URL` the container has nothing to render, and if you skip `UPLOAD_URL`
    the render is lost when the container exits.
 
-### Required on Salad
+### Getting data in and out — pick one
+
+Salad gives the container no disk, so the scene has to come from somewhere and the
+result has to go somewhere. Two interchangeable mechanisms:
+
+#### A) An rclone remote (least setup if you already have one)
+
+Put the scene at `<remote>/scene/scene.blend`, and the container will pull it,
+sync frames to `<remote>/frames` incrementally, and push the video to
+`<remote>/out/`. Google Drive, S3, R2, B2, OneDrive — anything rclone speaks.
 
 | Variable | Purpose |
 |---|---|
-| `SCENE_URL` | Pre-signed **GET** URL for your `.blend`. Downloaded to `/data/scene/scene.blend`. |
-| `SCENE_SHA256` | Optional integrity check for the above. |
-| `STATE_URL` | Pre-signed **PUT** URL for `frames.tar`. Pushed every `CHUNK` frames, pulled back at startup. **This is what makes preemption survivable.** |
-| `STATE_URL_GET` | Pre-signed **GET** for the same object. Defaults to `STATE_URL` if the URL accepts both verbs. |
-| `UPLOAD_URL` | Pre-signed **PUT** URL for the final `carrender.mp4`. |
+| `RCLONE_REMOTE` | Target, e.g. `gdrive:carrender` |
+| `RCLONE_CONFIG_B64` | Base64 of your `rclone.conf`, so it survives an env var: `base64 -w0 ~/.config/rclone/rclone.conf` |
+
+If you already have `gdrive:` configured locally, that is the whole setup — no new
+accounts, no pre-signed URLs, and the frames sync per-file so a preemption only
+costs you the frames since the last chunk.
+
+⚠️ `RCLONE_CONFIG_B64` contains a long-lived OAuth refresh token with full access
+to that Drive. Set it as a **secret** env var in Salad, not a plain one. If that
+is not acceptable, use option B.
+
+#### B) Pre-signed URLs (no credential in the container)
+
+| Variable | Purpose |
+|---|---|
+| `SCENE_URL` | Pre-signed **GET** for the `.blend` |
+| `SCENE_SHA256` | Optional integrity check |
+| `STATE_URL` | Pre-signed **PUT** for `frames.tar`, pushed every `CHUNK` frames and pulled back at startup |
+| `STATE_URL_GET` | Pre-signed **GET** for the same object (defaults to `STATE_URL`) |
+| `UPLOAD_URL` | Pre-signed **PUT** for the final `carrender.mp4` |
 
 Any S3-compatible bucket works (AWS S3, Cloudflare R2, Backblaze B2, MinIO).
-Generate one pre-signed URL per object with a long expiry — the render can take
-tens of minutes.
+Pre-sign each URL with a long expiry — the render can take tens of minutes.
 
-Alternatively bake the scene into the image (no `SCENE_URL` needed) by adding to
-the `Dockerfile`:
+#### Or bake the scene into the image
+
+Only if the package is private — a public image publishes whatever is inside it.
 
 ```dockerfile
 COPY your_scene.blend /opt/carrender/scene.blend
@@ -95,12 +119,12 @@ COPY your_scene.blend /opt/carrender/scene.blend
 | `PERSIST` | `1` | `use_persistent_data` — builds the BVH once per process |
 | `STEP` | `1` | Render every Nth frame |
 | `FRAMES` | – | Explicit comma list, e.g. `1,40,120` |
-| `CHUNK` | `32` | Frames per pass before a state upload |
+| `CHUNK` | `32` | Frames per pass before a state sync |
 | `FPS` | `24` | Encode frame rate (divided by `STEP` automatically) |
 | `CRF` | `16` | x264 quality (lower = better) |
 | `ENCODE` | `1` | Set `0` to render PNGs only |
 | `RETRIES` | `3` | Retries for a failed render pass |
-| `UPLOAD_CMD` | – | Arbitrary post-render hook, e.g. `rclone copy /data/out remote:out` |
+| `UPLOAD_CMD` | – | Arbitrary post-render hook (runs after the built-in upload) |
 
 ---
 
@@ -168,16 +192,16 @@ easier, and it is what the workflow is for.
 ## How the resumability works
 
 ```
-fetch scene ──▶ restore frames.tar ──▶ preflight (device/denoiser)
+fetch scene ──▶ restore frames ──▶ preflight (device/denoiser)
                                             │
                     ┌───────────────────────┘
                     ▼
-        render CHUNK frames ──▶ tar frames ──▶ PUT STATE_URL
+        render CHUNK frames ──▶ sync frames ──▶ rclone copy | PUT STATE_URL
                     │                              │
                     └── more frames? ──────────────┘   (loop)
                     │
                     ▼
-        ffmpeg encode ──▶ PUT UPLOAD_URL
+        ffmpeg encode ──▶ rclone copy out | PUT UPLOAD_URL
 ```
 
 Every pass re-invokes `blender -b scene.blend -P render.py`, which renders only
@@ -207,7 +231,9 @@ instead of re-rendering. Expect `14 passed, 0 failed`.
 
 - ✅ Image builds for `linux/amd64` (683 MB) and `blender -b --version` reports
   `Blender 5.2.1 LTS`
-- ✅ 14/14 smoke tests pass (chunk, state push/pull, resume, encode, upload)
+- ✅ 21/21 smoke tests pass — chunking, state tar push/pull, resume, encode,
+  upload, **and a full rclone round trip** (scene pull, incremental frame sync,
+  video push, resume from the remote)
 - ⚠️ **Not verified on a real GPU.** The Cycles/OptiX path has not been executed
   end-to-end on CUDA hardware. Run `preflight` on the target host before a long
   render — that is what it is for.

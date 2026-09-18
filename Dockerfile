@@ -33,6 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # Blender links these even in `-b` mode; ffmpeg does the H.264 encode.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl xz-utils ffmpeg tar gzip coreutils \
+        rclone \
         libx11-6 libxi6 libxxf86vm1 libxfixes3 libxrender1 libxrandr2 \
         libxinerama1 libxcursor1 libxkbcommon0 libxext6 \
         libgl1 libglu1-mesa libegl1 libsm6 libice6 \
