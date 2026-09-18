@@ -67,7 +67,8 @@ check "pass1 uploaded the mp4"                      "grep -q 'uploaded carrender
 check "server holds frames.tar"                     "[ -s '$STORE/frames.tar' ]"
 check "server holds carrender.mp4"                  "[ -s '$STORE/carrender.mp4' ]"
 check "state tar has all $FRAMES frames"            "[ \"\$(tar -tzf '$STORE/frames.tar' | grep -c 'f[0-9]*.png')\" -eq $FRAMES ]"
-check "mp4 is a real video"                         "ffprobe -v error -show_entries stream=codec_name -of csv=p=0 '$STORE/carrender.mp4' | grep -q h264"
+# probe inside the smoke image so the test does not depend on host ffmpeg
+check "mp4 is a real video"                         "$DKR run --rm -v $STORE:/x --entrypoint ffprobe $IMG -v error -show_entries stream=codec_name -of csv=p=0 /x/carrender.mp4 | grep -q h264"
 check "ALL DONE printed"                            "grep -q 'ALL DONE' /tmp/smoke_p1.log"
 
 echo "== pass 2: fresh container, must RESUME from the state tar =="
